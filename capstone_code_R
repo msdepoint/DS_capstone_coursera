@@ -1,0 +1,142 @@
+library(tm);library(RWeka);library(magrittr);library(dplyr)
+
+setwd('C:/Users/Matthew/Documents/Coursera/DataScience_Capstone')
+
+myDir <- "C:/Users/Matthew/Documents/Coursera/DataScience_Capstone/final/en_US" 
+twitter  <- readLines( file.path(myDir,'en_US.twitter.txt'), skipNul=TRUE,encoding="UTF-8")
+blog   <- readLines( file.path(myDir,'en_US.blogs.txt'), skipNul=TRUE,encoding="UTF-8")
+news    <- readLines( file.path(myDir,'en_US.news.txt'), skipNul=TRUE,encoding="UTF-8")
+
+
+#clean up
+twitter <- iconv(twitter, from = "latin1", to = "UTF-8", sub="")
+twitter <- stri_replace_all_regex(twitter, "\u2019|`","'")
+twitter <- stri_replace_all_regex(twitter, "\u201c|\u201d|u201f|``",'"')
+
+#Lets sample each raw file and then save them for preprocessing later
+sampBlog   <- sample(blog, 1000)
+sampNews    <- sample(news, 1000)
+sampTwitter <- sample(twitter, 1000)
+samples          <- c(sampTwitter, sampBlog, sampNews)
+#save( samples, file='sampCapstone.RData' )
+#rm( blog, twitter, news, sampTwitter, sampNews, sampBlog )
+
+#DATA Preprocessing
+#get profanity words
+myDir <- "C:/Users/Matthew/Documents/Coursera/DataScience_Capstone" 
+profane <- readLines(file.path(myDir,'profanity_english.txt'))
+
+sample_blogs <- sampBlog
+sample_twitter <- sampTwitter
+sample_news <- sampNews
+
+
+# check length function
+length_is <- function(n) function(x) length(x)==n
+
+# contruct single corpus from sample data
+vc_blogs <-
+  sample_blogs %>%
+  data.frame() %>%
+  DataframeSource() %>%
+  VCorpus %>%
+  tm_map( stripWhitespace ) %>%
+  tm_map(removeWords, profane)
+
+vc_news <-
+  sample_news %>%
+  data.frame() %>%
+  DataframeSource() %>%
+  VCorpus %>%
+  tm_map( stripWhitespace ) %>%
+  tm_map(removeWords, profane)
+
+vc_twitter <-
+  sample_twitter %>%
+  data.frame() %>%
+  DataframeSource() %>%
+  VCorpus %>%
+  tm_map( stripWhitespace ) %>%
+  tm_map(removeWords, profane)
+
+vc_all <- c(vc_blogs, vc_news, vc_twitter)
+
+#ngram tokaniser
+n <- 2L
+bigram_token <- function(x) NGramTokenizer(x, Weka_control(min = n, max = n))
+n <- 3L
+trigram_token <- function(x) NGramTokenizer(x, Weka_control(min = n, max = n))
+
+
+# frequency unigrams
+tdm_unigram <-
+  vc_all %>%
+  TermDocumentMatrix( control = list( removePunctuation = TRUE,
+                                      removeNumbers = TRUE,
+                                      wordLengths = c( 1, Inf) )
+  )
+
+freq_unigram <- 
+  tdm_unigram %>%
+  as.matrix %>%
+  rowSums
+
+# write all unigrams to a list
+# in order to create uniform levels of factors
+unigram_levels <- unique(tdm_unigram$dimnames$Terms)
+
+
+# bi-gram Term-Document Matrix
+tdm_bigram <-
+  vc_all %>%
+  TermDocumentMatrix( control = list( removePunctuation = TRUE,
+                                      removeNumbers = TRUE,
+                                      wordLengths = c( 1, Inf),
+                                      tokenize = bigram_token)
+  )
+
+# aggregate frequencies
+tdm_bigram %>%
+  as.matrix %>%
+  rowSums -> freq_bigram
+
+# repeat by frequency
+freq_bigram %<>%
+  names %>%
+  rep( times = freq_bigram )
+
+# split the bigram into two columns
+freq_bigram %<>%
+  strsplit(split=" ")
+
+# filter out those of less than t2o columns
+freq_bigram <- do.call(rbind, 
+                        Filter( length_is(2),
+                                freq_bigram )
+)
+
+# transform to data.frame encode as factors
+df_bigram <- data.frame(X = factor(freq_bigram[,1], levels = unigram_levels),
+                        Y  = factor(freq_bigram[,2], levels = unigram_levels) )
+
+library(e1071)
+bi_naiveBayes <-   naiveBayes( Y ~ X , df_bigram )
+
+save(bi_naiveBayes, unigram_levels, file = "bi_msd_predict.RData")
+
+
+#TEST IT
+# create a test string
+test_string <- "milk"
+
+# split it into separate words
+test_split <- strsplit(test_string, split = " " )
+
+# encode as a factor using the same levels
+test_factor <- factor(unlist(test_split), levels=unigram_levels)
+
+# transform to data frame
+test_df <- data.frame(X1 = test_factor[1])
+
+# estimate using the model
+predict(bi_naiveBayes, test_df)
